@@ -58,7 +58,11 @@ class CLAPIClient(object):
         retries = Retry(total=100, status_forcelist=(429, 500, 502, 504), backoff_factor=0.1)
         session.mount(self.base_url, requests.adapters.HTTPAdapter(max_retries=retries))
         session.headers.update(
-            {'Content-Type': 'application/json', 'Authorization': 'Bearer {}'.format(self.token)})
+            {
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {self.token}',
+            }
+        )
 
     @staticmethod
     def to_datetime(value):
@@ -91,14 +95,13 @@ class CLAPIClient(object):
         return self._request('incidents?count_total=false', params=payload)['items']
 
     def get_incident(self, incident_id, **payload):
-        r = self._request('incidents/%s' % incident_id, params=payload)
-        incident = r['results'][0]
-        return incident
+        r = self._request(f'incidents/{incident_id}', params=payload)
+        return r['results'][0]
 
     def update_incident(self, incident_id, status=None, severity=None, customer_key=None):
         data = {'incident_status': status, 'severity': severity, 'customer_key': customer_key}
         data = {(k, v) for k, v in data if v is not None}
-        self._request('incidents/{}'.format(incident_id), data=json.dumps(data), method='PUT')
+        self._request(f'incidents/{incident_id}', data=json.dumps(data), method='PUT')
 
     def get_all_incidents(self, incident_index, limit=100, order='created_at', vendor=None):
         while True:
@@ -122,7 +125,7 @@ class CLAPIClient(object):
                 logging.info('No new incidents found')
                 raise StopIteration()
 
-            logging.info('{} new incidents found'.format(len(results)))
+            logging.info(f'{len(results)} new incidents found')
             incident_index = self.get_latest_incident(results, order)
             yield incident_index, results
 
@@ -200,7 +203,7 @@ def run_forever(polling_interval, fn, cl_client, output_client, recorder, last_e
     while True:
         fn(cl_client, output_client, recorder, last_event, limit, order, vendor)
         last_event = recorder.get_last_call()
-        logging.info('No new results found sleeping for {} seconds'.format(polling_interval))
+        logging.info(f'No new results found sleeping for {polling_interval} seconds')
         sleep(polling_interval)
 
 
@@ -208,7 +211,7 @@ def config_log(loglevel):
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s')
     numeric_level = getattr(logging, loglevel.upper(), None)
     if numeric_level is None:
-        raise ValueError('Invalid log level: {}'.format(loglevel))
+        raise ValueError(f'Invalid log level: {loglevel}')
     logging.root.setLevel(numeric_level)
 
 
@@ -319,23 +322,18 @@ def flatten(d, do_matches_limit=True, remove_unicode=False, parent_key='', sep='
 
 
 def format_unicode_string(s, remove_unicode):
-    if remove_unicode and isinstance(s, unicode):
-        result = s.encode('utf-8')
-    else:
-        result = s
-    return result
+    return s.encode('utf-8') if remove_unicode and isinstance(s, unicode) else s
 
 
 def format_unicode_dict(d, remove_unicode):
-    new_dict = {}
-    for k, v in d.iteritems():
-        if isinstance(v, dict):
-            new_dict[format_unicode_string(k, remove_unicode)] = \
-                format_unicode_dict(v, remove_unicode)
-        else:
-            new_dict[format_unicode_string(k, remove_unicode)] = \
-                format_unicode_string(v, remove_unicode)
-    return new_dict
+    return {
+        format_unicode_string(k, remove_unicode): format_unicode_dict(
+            v, remove_unicode
+        )
+        if isinstance(v, dict)
+        else format_unicode_string(v, remove_unicode)
+        for k, v in d.iteritems()
+    }
 
 
 def handle_matches(matches, do_matches_limit, remove_unicode):
@@ -421,28 +419,30 @@ class SyslogClient(object):
 def leef_formatter(item):
     t_item = dict(transform_dict(leef_event_attr_mapping, item))
     leef_header = u'LEEF:1.0|Cloudlock|API|v2|Incidents|'
-    event_attr = u'\t'.join(u'{}={}'.format(k, v) for k, v in t_item.iteritems())
-    event_attr += u'\tdevTimeFormat=yyyy-MM-ddTHH:mm:ss.SSSSSSZ'
+    event_attr = (
+        u'\t'.join(f'{k}={v}' for k, v in t_item.iteritems())
+        + u'\tdevTimeFormat=yyyy-MM-ddTHH:mm:ss.SSSSSSZ'
+    )
+
     return leef_header + event_attr
 
 
 def cef_formatter(item):
     t_item = dict(transform_dict(cef_event_attr_mapping, item))
-    cef_header = u'CEF:0|Cloudlock|API|v2|CloudLockEnterpriseAPI|{}|{}|'.format(
-        t_item.pop('name'), t_item.pop('severity'))
-    event_attr = u' '.join(u'{}={}'.format(k, v) for k, v in t_item.iteritems())
+    cef_header = f"CEF:0|Cloudlock|API|v2|CloudLockEnterpriseAPI|{t_item.pop('name')}|{t_item.pop('severity')}|"
+
+    event_attr = u' '.join(f'{k}={v}' for k, v in t_item.iteritems())
     return cef_header + event_attr
 
 
 def get_output_client(cmdline_args):
     client, formatter = output_clients[cmdline_args.siem_client]
     client_args = {arg: getattr(cmdline_args, arg) for arg in clients_args[client]}
-    if client == FileClient:
-        if cmdline_args.file_format is not None:
-            formatter = output_clients[cmdline_args.file_format][1]
-        return client(formatter, **client_args)
-    else:
+    if client != FileClient:
         return client(formatter, clear_unicode=cmdline_args.clear_unicode, **client_args)
+    if cmdline_args.file_format is not None:
+        formatter = output_clients[cmdline_args.file_format][1]
+    return client(formatter, **client_args)
 
 
 clients_args = {
@@ -468,7 +468,7 @@ def main():
 
     last_event = EventIndex(args.from_date, 0) if args.from_date else recorder.get_last_call()
 
-    logging.info('Polling from {}'.format(last_event.datetime or 'first known event'))
+    logging.info(f"Polling from {last_event.datetime or 'first known event'}")
 
     if args.polling_interval:
         run_forever(args.polling_interval, incidents_loop, cl_client, output_client, recorder,
